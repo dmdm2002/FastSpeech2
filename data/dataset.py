@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset
 
 from utils.tools import load_wav_to_torch, load_filepaths_and_text
+from utils.layers import TacotronSTFT
 from data.text import text_to_sequence
 
 
@@ -21,12 +22,17 @@ class TextMelDataset(Dataset):
         self.sampling_rate = hparams.sampling_rate
         self.load_mel_from_disk = hparams.load_mel_from_disk
 
+        self.stft = TacotronSTFT(
+            hparams.filter_length, hparams.hop_length, hparams.win_length,
+            hparams.n_mel_channels, hparams.sampling_rate, hparams.mel_fmin,
+            hparams.mel_fmax)
+
         random.seed(hparams.seed)
         random.shuffle(self.audiopaths_and_text)
 
     def get_mel_text_pair(self, audiopath_and_text):
         audiopath, text = audiopath_and_text[0], audiopath_and_text[1]
-        audiopath = f'D:/Side/ETRI/US_Female/wav/{audiopath}.wav'
+        audiopath = f'D:/Side/DB/US_Female/wav/{audiopath}.wav'
         text = self._get_text(text)
         mel = self._get_mel(audiopath)
         return text, mel
