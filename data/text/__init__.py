@@ -20,7 +20,7 @@ def text_to_sequence(text, cleaner_names):
 
     Args:
       text: string to convert to a sequence
-      cleaner_names: names of the cleaner functions to run the text through
+      cleaner_names: names of the cleaner functions to runner the text through
 
     Returns:
       List of integers corresponding to the symbols in the text

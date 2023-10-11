@@ -177,3 +177,66 @@ def pad(input_ele, mel_max_length=None):
         out_list.append(one_batch_padded)
     out_padded = torch.stack(out_list)
     return out_padded
+
+
+def standard_norm(x, mean, std, is_mel=False):
+
+    if not is_mel:
+        x = remove_outlier(x)
+
+    zero_idxs = np.where(x == 0.0)[0]
+    x = (x - mean) / std
+    x[zero_idxs] = 0.0
+    return x
+
+def standard_norm_torch(x, mean, std):
+
+    zero_idxs = torch.where(x == 0.0)[0]
+    x = (x - mean) / std
+    x[zero_idxs] = 0.0
+    return x
+
+
+
+def de_norm(x, mean, std):
+    zero_idxs = torch.where(x == 0.0)[0]
+    x = mean + std * x
+    x[zero_idxs] = 0.0
+    return x
+
+
+def _is_outlier(x, p25, p75):
+    """Check if value is an outlier."""
+    lower = p25 - 1.5 * (p75 - p25)
+    upper = p75 + 1.5 * (p75 - p25)
+
+    return np.logical_or(x <= lower, x >= upper)
+
+
+def remove_outlier(x):
+    """Remove outlier from x."""
+    p25 = np.percentile(x, 25)
+    p75 = np.percentile(x, 75)
+
+    indices_of_outliers = []
+    for ind, value in enumerate(x):
+        if _is_outlier(value, p25, p75):
+            indices_of_outliers.append(ind)
+
+    x[indices_of_outliers] = 0.0
+
+    # replace by mean f0.
+    x[indices_of_outliers] = np.max(x)
+    return x
+
+def average_by_duration(x, durs):
+    mel_len = durs.sum()
+    durs_cum = np.cumsum(np.pad(durs, (1, 0)))
+
+    # calculate charactor f0/energy
+    x_char = np.zeros((durs.shape[0],), dtype=np.float32)
+    for idx, start, end in zip(range(mel_len), durs_cum[:-1], durs_cum[1:]):
+        values = x[start:end][np.where(x[start:end] != 0.0)[0]]
+        x_char[idx] = np.mean(values) if len(values) > 0 else 0.0  # np.mean([]) = nan.
+
+    return x_char.astype(np.float32)

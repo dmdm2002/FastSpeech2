@@ -1,7 +1,9 @@
 path:
-  ckpt_path: "./output/ckpt/LJSpeech"
-  log_path: "./output/log/LJSpeech"
-  result_path: "./output/result/LJSpeech"
+  ckpt_path: "D:/Side/BackUp/output/US_Female/ckp"
+  log_path: "D:/Side/BackUp/output/US_Female/log"
+  result_path: "D:/Side/BackUp/output/US_Female/result"
+  pretrained: True
+  pretrained_path: "D:/Side/BackUp/pretrain/900000.pth.tar"
 optimizer:
   batch_size: 48
   betas: [0.9, 0.98]

@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import Dataset
 
 from utils.tools import load_wav_to_torch, load_filepaths_and_text
-from utils.layers import TacotronSTFT
+from audio.stft import TacotronSTFT
 from data.text import text_to_sequence
 
 
