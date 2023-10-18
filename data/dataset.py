@@ -1,115 +1,255 @@
-import random
+import json
+import math
+import os
+
 import numpy as np
-import torch
 from torch.utils.data import Dataset
 
-from utils.tools import load_wav_to_torch, load_filepaths_and_text
-from audio.stft import TacotronSTFT
 from data.text import text_to_sequence
+from utils.tools import pad_1D, pad_2D
 
 
-class TextMelDataset(Dataset):
-    """
-    1) loads audio, text pairs
-    2) normalizes text and converts them to sequences of one=hot vectors
-    3) computes mel-spectrograms from audio files.
-    """
-    def __init__(self, audiopaths_and_text, hparams):
-        super().__init__()
-        self.audiopaths_and_text = load_filepaths_and_text(audiopaths_and_text)
-        self.text_cleaners = hparams.text_cleaners
-        self.max_wav_value = hparams.max_wav_value
-        self.sampling_rate = hparams.sampling_rate
-        self.load_mel_from_disk = hparams.load_mel_from_disk
+class Dataset(Dataset):
+    def __init__(
+        self, filename, preprocess_config, train_config, sort=False, drop_last=False
+    ):
+        self.dataset_name = preprocess_config["dataset"]
+        self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
+        self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
+        self.batch_size = train_config["optimizer"]["batch_size"]
 
-        self.stft = TacotronSTFT(
-            hparams.filter_length, hparams.hop_length, hparams.win_length,
-            hparams.n_mel_channels, hparams.sampling_rate, hparams.mel_fmin,
-            hparams.mel_fmax)
-
-        random.seed(hparams.seed)
-        random.shuffle(self.audiopaths_and_text)
-
-    def get_mel_text_pair(self, audiopath_and_text):
-        audiopath, text = audiopath_and_text[0], audiopath_and_text[1]
-        audiopath = f'D:/Side/DB/US_Female/wav/{audiopath}.wav'
-        text = self._get_text(text)
-        mel = self._get_mel(audiopath)
-        return text, mel
-
-    def _get_mel(self, filename):
-        if not self.load_mel_from_disk:
-            audio, sampling_rate = load_wav_to_torch(filename)
-            if sampling_rate != self.stft.sampling_rate:
-                raise ValueError(f"{sampling_rate} {self.stft.sampling_rate} SR doesn't match target "
-                                 f"{self.stft.sampling_rate} SR")
-
-            audio_norm = audio / self.max_wav_value
-            audio_norm = audio_norm.unsqueeze(0)
-            audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-            melspec = self.stft.mel_spectrogram(audio_norm)
-            melspec = torch.squeeze(melspec, 0)
-
-        else:
-            melspec = torch.from_numpy(np.load(filename))
-            assert melspec.size(0) == self.stft.n_mel_channels, (
-                f"Mel dimension mismatch: given {melspec.size(0)}, expected {self.stft.n_mel_channels}"
-            )
-
-        return melspec
-
-    def _get_text(self, text):
-        text_norm = torch.IntTensor(text_to_sequence(text, self.text_cleaners))
-        return text_norm
-
-    def __getitem__(self, index):
-        return self.get_mel_text_pair(self.audiopaths_and_text[index])
+        self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
+            filename
+        )
+        with open(os.path.join(self.preprocessed_path, "speakers.json")) as f:
+            self.speaker_map = json.load(f)
+        self.sort = sort
+        self.drop_last = drop_last
 
     def __len__(self):
-        return len(self.audiopaths_and_text)
+        return len(self.text)
+
+    def __getitem__(self, idx):
+        basename = self.basename[idx]
+        speaker = self.speaker[idx]
+        speaker_id = self.speaker_map[speaker]
+        raw_text = self.raw_text[idx]
+        phone = np.array(text_to_sequence(self.text[idx], self.cleaners))
+        mel_path = os.path.join(
+            self.preprocessed_path,
+            "mel",
+            "{}-mel-{}.npy".format(speaker, basename),
+        )
+        mel = np.load(mel_path)
+        pitch_path = os.path.join(
+            self.preprocessed_path,
+            "pitch",
+            "{}-pitch-{}.npy".format(speaker, basename),
+        )
+        pitch = np.load(pitch_path)
+        energy_path = os.path.join(
+            self.preprocessed_path,
+            "energy",
+            "{}-energy-{}.npy".format(speaker, basename),
+        )
+        energy = np.load(energy_path)
+        duration_path = os.path.join(
+            self.preprocessed_path,
+            "duration",
+            "{}-duration-{}.npy".format(speaker, basename),
+        )
+        duration = np.load(duration_path)
+
+        sample = {
+            "id": basename,
+            "speaker": speaker_id,
+            "text": phone,
+            "raw_text": raw_text,
+            "mel": mel,
+            "pitch": pitch,
+            "energy": energy,
+            "duration": duration,
+        }
+
+        return sample
+
+    def process_meta(self, filename):
+        with open(
+            os.path.join(self.preprocessed_path, filename), "r", encoding="utf-8"
+        ) as f:
+            name = []
+            speaker = []
+            text = []
+            raw_text = []
+            for line in f.readlines():
+                n, s, t, r = line.strip("\n").split("|")
+                name.append(n)
+                speaker.append(s)
+                text.append(t)
+                raw_text.append(r)
+            return name, speaker, text, raw_text
+
+    def reprocess(self, data, idxs):
+        ids = [data[idx]["id"] for idx in idxs]
+        speakers = [data[idx]["speaker"] for idx in idxs]
+        texts = [data[idx]["text"] for idx in idxs]
+        raw_texts = [data[idx]["raw_text"] for idx in idxs]
+        mels = [data[idx]["mel"] for idx in idxs]
+        pitches = [data[idx]["pitch"] for idx in idxs]
+        energies = [data[idx]["energy"] for idx in idxs]
+        durations = [data[idx]["duration"] for idx in idxs]
+
+        text_lens = np.array([text.shape[0] for text in texts])
+        mel_lens = np.array([mel.shape[0] for mel in mels])
+
+        speakers = np.array(speakers)
+        texts = pad_1D(texts)
+        mels = pad_2D(mels)
+        pitches = pad_1D(pitches)
+        energies = pad_1D(energies)
+        durations = pad_1D(durations)
+
+        return (
+            ids,
+            raw_texts,
+            speakers,
+            texts,
+            text_lens,
+            max(text_lens),
+            mels,
+            mel_lens,
+            max(mel_lens),
+            pitches,
+            energies,
+            durations,
+        )
+
+    def collate_fn(self, data):
+        data_size = len(data)
+
+        if self.sort:
+            len_arr = np.array([d["text"].shape[0] for d in data])
+            idx_arr = np.argsort(-len_arr)
+        else:
+            idx_arr = np.arange(data_size)
+
+        tail = idx_arr[len(idx_arr) - (len(idx_arr) % self.batch_size) :]
+        idx_arr = idx_arr[: len(idx_arr) - (len(idx_arr) % self.batch_size)]
+        idx_arr = idx_arr.reshape((-1, self.batch_size)).tolist()
+        if not self.drop_last and len(tail) > 0:
+            idx_arr += [tail.tolist()]
+
+        output = list()
+        for idx in idx_arr:
+            output.append(self.reprocess(data, idx))
+
+        return output
 
 
-class TextMelCollate:
-    """ Zero-pads model inputs and targets based on number of frames per setep
-    """
-    def __init__(self, n_frames_per_step):
-        self.n_frames_per_step = n_frames_per_step
+class TextDataset(Dataset):
+    def __init__(self, filepath, preprocess_config):
+        self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
 
-    def __call__(self, batch):
-        """Collate's training batch from normalized text and mel-spectrogram
-        PARAMS
-        ------
-        batch: [text_normalized, mel_normalized]
-        """
-        # Right zero-pad all one-hot text sequences to max input length
-        input_lengths, ids_sorted_decreasing = torch.sort(
-            torch.LongTensor([len(x[0]) for x in batch]),
-            dim=0, descending=True)
-        max_input_len = input_lengths[0]
+        self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
+            filepath
+        )
+        with open(
+            os.path.join(
+                preprocess_config["path"]["preprocessed_path"], "speakers.json"
+            )
+        ) as f:
+            self.speaker_map = json.load(f)
 
-        text_padded = torch.LongTensor(len(batch), max_input_len)
-        text_padded.zero_()
-        for i in range(len(ids_sorted_decreasing)):
-            text = batch[ids_sorted_decreasing[i]][0]
-            text_padded[i, :text.size(0)] = text
+    def __len__(self):
+        return len(self.text)
 
-        # Right zero-pad mel-spec
-        num_mels = batch[0][1].size(0)
-        max_target_len = max([x[1].size(1) for x in batch])
-        if max_target_len % self.n_frames_per_step != 0:
-            max_target_len += self.n_frames_per_step - max_target_len % self.n_frames_per_step
-            assert max_target_len % self.n_frames_per_step == 0
+    def __getitem__(self, idx):
+        basename = self.basename[idx]
+        speaker = self.speaker[idx]
+        speaker_id = self.speaker_map[speaker]
+        raw_text = self.raw_text[idx]
+        phone = np.array(text_to_sequence(self.text[idx], self.cleaners))
 
-        # include mel padded and gate padded
-        mel_padded = torch.FloatTensor(len(batch), num_mels, max_target_len)
-        mel_padded.zero_()
-        gate_padded = torch.FloatTensor(len(batch), max_target_len)
-        gate_padded.zero_()
-        output_lengths = torch.LongTensor(len(batch))
-        for i in range(len(ids_sorted_decreasing)):
-            mel = batch[ids_sorted_decreasing[i]][1]
-            mel_padded[i, :, :mel.size(1)] = mel
-            gate_padded[i, mel.size(1)-1:] = 1
-            output_lengths[i] = mel.size(1)
+        return (basename, speaker_id, phone, raw_text)
 
-        return text_padded, input_lengths, mel_padded, output_lengths, gate_padded
+    def process_meta(self, filename):
+        with open(filename, "r", encoding="utf-8") as f:
+            name = []
+            speaker = []
+            text = []
+            raw_text = []
+            for line in f.readlines():
+                n, s, t, r = line.strip("\n").split("|")
+                name.append(n)
+                speaker.append(s)
+                text.append(t)
+                raw_text.append(r)
+            return name, speaker, text, raw_text
+
+    def collate_fn(self, data):
+        ids = [d[0] for d in data]
+        speakers = np.array([d[1] for d in data])
+        texts = [d[2] for d in data]
+        raw_texts = [d[3] for d in data]
+        text_lens = np.array([text.shape[0] for text in texts])
+
+        texts = pad_1D(texts)
+
+        return ids, raw_texts, speakers, texts, text_lens, max(text_lens)
+
+
+if __name__ == "__main__":
+    # Test
+    import torch
+    import yaml
+    from torch.utils.data import DataLoader
+    from utils.tools import to_device
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    preprocess_config = yaml.load(
+        open("./config/LJSpeech/preprocess.yaml", "r"), Loader=yaml.FullLoader
+    )
+    train_config = yaml.load(
+        open("./config/LJSpeech/train.yaml", "r"), Loader=yaml.FullLoader
+    )
+
+    train_dataset = Dataset(
+        "train.txt", preprocess_config, train_config, sort=True, drop_last=True
+    )
+    val_dataset = Dataset(
+        "val.txt", preprocess_config, train_config, sort=False, drop_last=False
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=train_config["optimizer"]["batch_size"] * 4,
+        shuffle=True,
+        collate_fn=train_dataset.collate_fn,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=train_config["optimizer"]["batch_size"],
+        shuffle=False,
+        collate_fn=val_dataset.collate_fn,
+    )
+
+    n_batch = 0
+    for batchs in train_loader:
+        for batch in batchs:
+            to_device(batch, device)
+            n_batch += 1
+    print(
+        "Training set  with size {} is composed of {} batches.".format(
+            len(train_dataset), n_batch
+        )
+    )
+
+    n_batch = 0
+    for batchs in val_loader:
+        for batch in batchs:
+            to_device(batch, device)
+            n_batch += 1
+    print(
+        "Validation set  with size {} is composed of {} batches.".format(
+            len(val_dataset), n_batch
+        )
+    )

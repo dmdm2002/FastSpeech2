@@ -63,6 +63,9 @@ def _clean_text(text, cleaner_names):
 
 
 def _symbols_to_sequence(symbols):
+  missing = [s for s in symbols if not _should_keep_symbol(s)]
+  if missing:
+    print(missing)
   return [_symbol_to_id[s] for s in symbols if _should_keep_symbol(s)]
 
 

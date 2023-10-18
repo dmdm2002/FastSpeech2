@@ -1,10 +1,10 @@
 dataset: "US_Female_data"
 
 path:
-  corpus_path: "D:/Side/DB/US_Female"
+  corpus_path: "D:/Side/ETRI/DB/LJSpeech-1.1"
   lexicon_path: "lexicon/librispeech-lexicon.txt"
-  raw_path: "D:/Side/DB/US_Female/Speaker/"
-  preprocessed_path: "../preprocess/preprocessed_data/US_Female"
+  raw_path: "D:/Side/ETRI/DB/LJSpeech-1.1/temp"
+  preprocessed_path: "D:/Side/ETRI/DB/LJSpeech-1.1/Outdir_phoneme_level"
 
 preprocessing:
   val_size: 512
@@ -23,8 +23,8 @@ preprocessing:
     mel_fmin: 0
     mel_fmax: 8000 # please set to 8000 for HiFi-GAN vocoder, set to null for MelGAN vocoder
   pitch:
-    feature: "frame_level" # support 'phoneme_level' or 'frame_level'
-    normalization: False
+    feature: "phoneme_level" # support 'phoneme_level' or 'frame_level'
+    normalization: True
   energy:
-    feature: "frame_level" # support 'phoneme_level' or 'frame_level'
-    normalization: False
+    feature: "phoneme_level" # support 'phoneme_level' or 'frame_level'
+    normalization: True
