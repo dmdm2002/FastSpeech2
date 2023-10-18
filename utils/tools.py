@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib
-from scipy.io.wavfile import read
+from scipy.io import wavfile
 from matplotlib import pyplot as plt
 
 
@@ -13,24 +13,6 @@ matplotlib.use("Agg")
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def get_mask_from_lengths(lengths):
-    max_len = torch.max(lengths).item()
-    ids = torch.arange(0, max_len, out=torch.cuda.LongTensor(max_len))
-    mask = (ids < lengths.unsqueeze(1)).bool()
-    return mask
-
-
-def load_wav_to_torch(full_path):
-    sampling_rate, data = read(full_path)
-    return torch.FloatTensor(data.astype(np.float32)), sampling_rate
-
-
-def load_filepaths_and_text(filename, split="|"):
-    with open(filename, encoding='utf-8') as f:
-        filepaths_and_text = [line.strip().split(split) for line in f]
-    return filepaths_and_text
 
 
 def to_device(data, device):
@@ -124,6 +106,162 @@ def expand(values, durations):
     return np.array(out)
 
 
+def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_config):
+
+    basename = targets[0][0]
+    src_len = predictions[8][0].item()
+    mel_len = predictions[9][0].item()
+    mel_target = targets[6][0, :mel_len].detach().transpose(0, 1)
+    mel_prediction = predictions[1][0, :mel_len].detach().transpose(0, 1)
+    duration = targets[11][0, :src_len].detach().cpu().numpy()
+    if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
+        pitch = targets[9][0, :src_len].detach().cpu().numpy()
+        pitch = expand(pitch, duration)
+    else:
+        pitch = targets[9][0, :mel_len].detach().cpu().numpy()
+    if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
+        energy = targets[10][0, :src_len].detach().cpu().numpy()
+        energy = expand(energy, duration)
+    else:
+        energy = targets[10][0, :mel_len].detach().cpu().numpy()
+
+    with open(
+        os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
+    ) as f:
+        stats = json.load(f)
+        stats = stats["pitch"] + stats["energy"][:2]
+
+    fig = plot_mel(
+        [
+            (mel_prediction.cpu().numpy(), pitch, energy),
+            (mel_target.cpu().numpy(), pitch, energy),
+        ],
+        stats,
+        ["Synthetized Spectrogram", "Ground-Truth Spectrogram"],
+    )
+
+    if vocoder is not None:
+        from utils.builder import vocoder_infer
+
+        wav_reconstruction = vocoder_infer(
+            mel_target.unsqueeze(0),
+            vocoder,
+            model_config,
+            preprocess_config,
+        )[0]
+        wav_prediction = vocoder_infer(
+            mel_prediction.unsqueeze(0),
+            vocoder,
+            model_config,
+            preprocess_config,
+        )[0]
+    else:
+        wav_reconstruction = wav_prediction = None
+
+    return fig, wav_reconstruction, wav_prediction, basename
+
+
+def synth_samples(targets, predictions, vocoder, model_config, preprocess_config, path):
+
+    basenames = targets[0]
+    for i in range(len(predictions[0])):
+        basename = basenames[i]
+        src_len = predictions[8][i].item()
+        mel_len = predictions[9][i].item()
+        mel_prediction = predictions[1][i, :mel_len].detach().transpose(0, 1)
+        duration = predictions[5][i, :src_len].detach().cpu().numpy()
+        if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
+            pitch = predictions[2][i, :src_len].detach().cpu().numpy()
+            pitch = expand(pitch, duration)
+        else:
+            pitch = predictions[2][i, :mel_len].detach().cpu().numpy()
+        if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
+            energy = predictions[3][i, :src_len].detach().cpu().numpy()
+            energy = expand(energy, duration)
+        else:
+            energy = predictions[3][i, :mel_len].detach().cpu().numpy()
+
+        with open(
+            os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
+        ) as f:
+            stats = json.load(f)
+            stats = stats["pitch"] + stats["energy"][:2]
+
+        fig = plot_mel(
+            [
+                (mel_prediction.cpu().numpy(), pitch, energy),
+            ],
+            stats,
+            ["Synthetized Spectrogram"],
+        )
+        plt.savefig(os.path.join(path, "{}.png".format(basename)))
+        plt.close()
+
+    from utils.builder import vocoder_infer
+
+    mel_predictions = predictions[1].transpose(1, 2)
+    lengths = predictions[9] * preprocess_config["preprocessing"]["stft"]["hop_length"]
+    wav_predictions = vocoder_infer(
+        mel_predictions, vocoder, model_config, preprocess_config, lengths=lengths
+    )
+
+    sampling_rate = preprocess_config["preprocessing"]["audio"]["sampling_rate"]
+    for wav, basename in zip(wav_predictions, basenames):
+        wavfile.write(os.path.join(path, "{}.wav".format(basename)), sampling_rate, wav)
+
+
+def plot_mel(data, stats, titles):
+    fig, axes = plt.subplots(len(data), 1, squeeze=False)
+    if titles is None:
+        titles = [None for i in range(len(data))]
+    pitch_min, pitch_max, pitch_mean, pitch_std, energy_min, energy_max = stats
+    pitch_min = pitch_min * pitch_std + pitch_mean
+    pitch_max = pitch_max * pitch_std + pitch_mean
+
+    def add_axis(fig, old_ax):
+        ax = fig.add_axes(old_ax.get_position(), anchor="W")
+        ax.set_facecolor("None")
+        return ax
+
+    for i in range(len(data)):
+        mel, pitch, energy = data[i]
+        pitch = pitch * pitch_std + pitch_mean
+        axes[i][0].imshow(mel, origin="lower")
+        axes[i][0].set_aspect(2.5, adjustable="box")
+        axes[i][0].set_ylim(0, mel.shape[0])
+        axes[i][0].set_title(titles[i], fontsize="medium")
+        axes[i][0].tick_params(labelsize="x-small", left=False, labelleft=False)
+        axes[i][0].set_anchor("W")
+
+        ax1 = add_axis(fig, axes[i][0])
+        ax1.plot(pitch, color="tomato")
+        ax1.set_xlim(0, mel.shape[1])
+        ax1.set_ylim(0, pitch_max)
+        ax1.set_ylabel("F0", color="tomato")
+        ax1.tick_params(
+            labelsize="x-small", colors="tomato", bottom=False, labelbottom=False
+        )
+
+        ax2 = add_axis(fig, axes[i][0])
+        ax2.plot(energy, color="darkviolet")
+        ax2.set_xlim(0, mel.shape[1])
+        ax2.set_ylim(energy_min, energy_max)
+        ax2.set_ylabel("Energy", color="darkviolet")
+        ax2.yaxis.set_label_position("right")
+        ax2.tick_params(
+            labelsize="x-small",
+            colors="darkviolet",
+            bottom=False,
+            labelbottom=False,
+            left=False,
+            labelleft=False,
+            right=True,
+            labelright=True,
+        )
+
+    return fig
+
+
 def pad_1D(inputs, PAD=0):
     def pad_data(x, length, PAD):
         x_padded = np.pad(
@@ -178,65 +316,3 @@ def pad(input_ele, mel_max_length=None):
     out_padded = torch.stack(out_list)
     return out_padded
 
-
-def standard_norm(x, mean, std, is_mel=False):
-
-    if not is_mel:
-        x = remove_outlier(x)
-
-    zero_idxs = np.where(x == 0.0)[0]
-    x = (x - mean) / std
-    x[zero_idxs] = 0.0
-    return x
-
-def standard_norm_torch(x, mean, std):
-
-    zero_idxs = torch.where(x == 0.0)[0]
-    x = (x - mean) / std
-    x[zero_idxs] = 0.0
-    return x
-
-
-
-def de_norm(x, mean, std):
-    zero_idxs = torch.where(x == 0.0)[0]
-    x = mean + std * x
-    x[zero_idxs] = 0.0
-    return x
-
-
-def _is_outlier(x, p25, p75):
-    """Check if value is an outlier."""
-    lower = p25 - 1.5 * (p75 - p25)
-    upper = p75 + 1.5 * (p75 - p25)
-
-    return np.logical_or(x <= lower, x >= upper)
-
-
-def remove_outlier(x):
-    """Remove outlier from x."""
-    p25 = np.percentile(x, 25)
-    p75 = np.percentile(x, 75)
-
-    indices_of_outliers = []
-    for ind, value in enumerate(x):
-        if _is_outlier(value, p25, p75):
-            indices_of_outliers.append(ind)
-
-    x[indices_of_outliers] = 0.0
-
-    # replace by mean f0.
-    x[indices_of_outliers] = np.max(x)
-    return x
-
-def average_by_duration(x, durs):
-    mel_len = durs.sum()
-    durs_cum = np.cumsum(np.pad(durs, (1, 0)))
-
-    # calculate charactor f0/energy
-    x_char = np.zeros((durs.shape[0],), dtype=np.float32)
-    for idx, start, end in zip(range(mel_len), durs_cum[:-1], durs_cum[1:]):
-        values = x[start:end][np.where(x[start:end] != 0.0)[0]]
-        x_char[idx] = np.mean(values) if len(values) > 0 else 0.0  # np.mean([]) = nan.
-
-    return x_char.astype(np.float32)

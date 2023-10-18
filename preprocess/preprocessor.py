@@ -69,13 +69,13 @@ class Preprocessor:
             for wav_name in os.listdir(os.path.join(self.in_dir, speaker)):
                 if ".wav" not in wav_name:
                     continue
+
                 basename = wav_name.split(".")[0]
                 tg_path = os.path.join(
                     self.out_dir, "TextGrid", speaker, "{}.TextGrid".format(basename)
                 )
                 if os.path.exists(tg_path):
                     ret = self.process_utterance(speaker, basename)
-                    print(ret)
                     if ret is None:
                         continue
                     else:

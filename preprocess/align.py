@@ -1,4 +1,5 @@
 import os
+import yaml
 
 import librosa
 import numpy as np
@@ -6,7 +7,6 @@ from scipy.io import wavfile
 from tqdm import tqdm
 
 from data.text import _clean_text
-import yaml
 
 
 def prepare_align(config):
@@ -15,7 +15,7 @@ def prepare_align(config):
     sampling_rate = config["preprocessing"]["audio"]["sampling_rate"]
     max_wav_value = config["preprocessing"]["audio"]["max_wav_value"]
     cleaners = config["preprocessing"]["text"]["text_cleaners"]
-    speaker = "US_Female_data"
+    speaker = "LJSpeech"
     with open(os.path.join(in_dir, "metadata.csv"), encoding="utf-8") as f:
         for line in tqdm(f):
             parts = line.strip().split("|")
@@ -23,7 +23,7 @@ def prepare_align(config):
             text = parts[1]
             text = _clean_text(text, cleaners)
 
-            wav_path = os.path.join(in_dir, "wav", "{}.wav".format(base_name))
+            wav_path = os.path.join(in_dir, "wavs", "{}.wav".format(base_name))
             if os.path.exists(wav_path):
                 os.makedirs(os.path.join(out_dir, speaker), exist_ok=True)
                 wav, _ = librosa.load(wav_path, sr=sampling_rate)

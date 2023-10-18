@@ -57,6 +57,7 @@ class VarianceAdaptor(nn.Module):
                 torch.linspace(pitch_min, pitch_max, n_bins - 1),
                 requires_grad=False,
             )
+
         if energy_quantization == "log":
             self.energy_bins = nn.Parameter(
                 torch.exp(
